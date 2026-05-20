@@ -23,7 +23,7 @@ Windows' built-in "Best Mode Logic" silently downgrades PC timings to TV timings
 
 ### Download
 
-Grab the latest `DisplayConfigManager.exe` from the [Releases](../../releases) page — it's a self-contained single file, no installer needed.
+Grab the latest `DisplayConfigManager.exe` from the [Releases](https://github.com/RodolfoGaspary/display-config-manager/releases) page — it's a self-contained single file, no installer needed.
 
 ### Build from Source
 
@@ -31,7 +31,7 @@ Grab the latest `DisplayConfigManager.exe` from the [Releases](../../releases) p
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/display-config-manager.git
+git clone https://github.com/RodolfoGaspary/display-config-manager.git
 cd display-config-manager
 
 # Build

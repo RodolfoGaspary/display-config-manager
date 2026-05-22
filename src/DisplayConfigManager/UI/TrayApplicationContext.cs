@@ -14,9 +14,21 @@ internal sealed class TrayApplicationContext : IDisposable
     private readonly DisplayManagerService _displayService = new();
     private readonly PresetStorageService _presetStorage = new();
     private readonly SettingsStorageService _settingsStorage = new();
+    private readonly DisplayChangeListener _displayListener = new();
+
+    // Debounce: when WE apply a preset, Windows fires WM_DISPLAYCHANGE which
+    // would re-trigger ApplyDefaultPreset. We ignore display-change events for
+    // a short window after every apply.
+    private DateTime _suppressUntil = DateTime.MinValue;
+
+    // Lightweight monotonic counter so a brand-new wake event invalidates
+    // pending retries from a previous event.
+    private int _reapplyGeneration;
 
     public TrayApplicationContext()
     {
+        DiagnosticLog.Write("──────── App starting ────────");
+
         _trayIcon = new WinForms.NotifyIcon
         {
             Text = "Display Config Manager",
@@ -30,9 +42,11 @@ internal sealed class TrayApplicationContext : IDisposable
         // ── Auto-restore wiring ──────────────────────────────────────────────
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         SystemEvents.SessionSwitch    += OnSessionSwitch;
+        _displayListener.DisplayChanged += OnDisplayChanged;
 
         // Apply the default preset on startup so that after a reboot the saved
         // configuration is restored even if Windows defaulted to another EDID.
+        DiagnosticLog.Write("Startup: applying default preset (if any).");
         ApplyDefaultPreset();
     }
 
@@ -79,8 +93,25 @@ internal sealed class TrayApplicationContext : IDisposable
         startupItem.Click += (_, _) =>
         {
             StartupRegistrationService.SetRegistered(!startupItem.Checked);
+            DiagnosticLog.Write($"Start-with-Windows toggled to {!startupItem.Checked}.");
         };
         menu.Items.Add(startupItem);
+
+        menu.Items.Add(new WinForms.ToolStripSeparator());
+        menu.Items.Add("Reapply default now",  null, (_, _) =>
+        {
+            DiagnosticLog.Write("Manual reapply requested from tray menu.");
+            ApplyDefaultPreset(silent: false);
+        });
+        menu.Items.Add("Open log folder",      null, (_, _) =>
+        {
+            try
+            {
+                System.Diagnostics.Process.Start("explorer.exe",
+                    $"/select,\"{DiagnosticLog.LogPath}\"");
+            }
+            catch { /* ignore */ }
+        });
 
         menu.Items.Add(new WinForms.ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => System.Windows.Application.Current.Shutdown());
@@ -93,32 +124,46 @@ internal sealed class TrayApplicationContext : IDisposable
         var settings = _settingsStorage.Load();
         settings.DefaultPresetId = presetId;
         _settingsStorage.Save(settings);
+        DiagnosticLog.Write($"Default preset set to {presetId}.");
     }
 
     private void ApplyPreset(Preset preset, bool silent = false)
     {
         try
         {
+            // Suppress the WM_DISPLAYCHANGE feedback loop caused by our own apply.
+            _suppressUntil = DateTime.UtcNow.AddSeconds(5);
+            DiagnosticLog.Write($"Applying preset '{preset.Name}' ({preset.Id}).");
             _displayService.ApplyConfiguration(preset);
+            DiagnosticLog.Write($"Applied preset '{preset.Name}' successfully.");
         }
         catch (DisplayConfigException ex)
         {
+            DiagnosticLog.Write($"Apply FAILED for '{preset.Name}': {ex.Message}");
             if (!silent)
                 MessageBox.Show(ex.Message, "Display Config Manager",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
-    private void ApplyDefaultPreset()
+    private void ApplyDefaultPreset(bool silent = true)
     {
         var settings = _settingsStorage.Load();
-        if (settings.DefaultPresetId is not { } id) return;
+        if (settings.DefaultPresetId is not { } id)
+        {
+            DiagnosticLog.Write("ApplyDefaultPreset: no default set, skipping.");
+            return;
+        }
 
         var preset = _presetStorage.LoadPresets().FirstOrDefault(p => p.Id == id);
-        if (preset is null) return;
+        if (preset is null)
+        {
+            DiagnosticLog.Write(
+                $"ApplyDefaultPreset: default id {id} not found in presets, skipping.");
+            return;
+        }
 
-        // Silent: don't pop modal errors after wake — only show a tray tooltip.
-        ApplyPreset(preset, silent: true);
+        ApplyPreset(preset, silent: silent);
     }
 
     private void SaveCurrentPreset()
@@ -138,10 +183,12 @@ internal sealed class TrayApplicationContext : IDisposable
                     Modes = config.Modes.Select(DtoMapper.ModeInfoToDto).ToArray(),
                 };
                 _presetStorage.AddPreset(preset);
+                DiagnosticLog.Write($"Saved new preset '{preset.Name}' ({preset.Id}).");
             }
         }
         catch (DisplayConfigException ex)
         {
+            DiagnosticLog.Write($"SaveCurrentPreset FAILED: {ex.Message}");
             MessageBox.Show(ex.Message, "Display Config Manager",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -158,30 +205,70 @@ internal sealed class TrayApplicationContext : IDisposable
 
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
     {
+        DiagnosticLog.Write($"PowerModeChanged: {e.Mode}");
         if (e.Mode == PowerModes.Resume)
-            ScheduleReapply();
+            ScheduleReapply("PowerResume");
     }
 
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     {
+        DiagnosticLog.Write($"SessionSwitch: {e.Reason}");
         if (e.Reason == SessionSwitchReason.SessionUnlock
-         || e.Reason == SessionSwitchReason.ConsoleConnect)
-            ScheduleReapply();
+         || e.Reason == SessionSwitchReason.ConsoleConnect
+         || e.Reason == SessionSwitchReason.SessionLogon)
+            ScheduleReapply($"SessionSwitch:{e.Reason}");
+    }
+
+    private void OnDisplayChanged()
+    {
+        if (DateTime.UtcNow < _suppressUntil)
+        {
+            // This change was caused by us applying the preset — ignore.
+            return;
+        }
+
+        DiagnosticLog.Write("WM_DISPLAYCHANGE received (external).");
+        ScheduleReapply("WM_DISPLAYCHANGE");
     }
 
     /// <summary>
-    /// Re-apply the default preset on the WPF dispatcher after a small delay so
-    /// Windows finishes its own display reconfiguration before we override it.
+    /// Re-apply the default preset multiple times after wake/unlock/display
+    /// change. Windows can take several seconds to finish its own
+    /// reconfiguration after these events, and may even override us once we
+    /// apply — so we retry at 2s, 5s, and 10s.
     /// </summary>
-    private void ScheduleReapply()
+    private void ScheduleReapply(string trigger)
     {
         var dispatcher = System.Windows.Application.Current?.Dispatcher;
         if (dispatcher is null) return;
 
+        var generation = Interlocked.Increment(ref _reapplyGeneration);
+        DiagnosticLog.Write($"ScheduleReapply triggered by {trigger} (gen {generation}).");
+
         _ = Task.Run(async () =>
         {
-            await Task.Delay(2000);
-            dispatcher.Invoke(ApplyDefaultPreset);
+            int[] delaysMs = [2000, 3000, 5000]; // cumulative: 2s, 5s, 10s
+
+            foreach (var delay in delaysMs)
+            {
+                await Task.Delay(delay);
+
+                // If another trigger fired meanwhile, abandon this chain so the
+                // newer one's retries take over.
+                if (Volatile.Read(ref _reapplyGeneration) != generation)
+                {
+                    DiagnosticLog.Write(
+                        $"Reapply chain gen {generation} superseded — exiting.");
+                    return;
+                }
+
+                dispatcher.Invoke(() =>
+                {
+                    DiagnosticLog.Write(
+                        $"Reapply attempt (gen {generation}, after +{delay}ms).");
+                    ApplyDefaultPreset();
+                });
+            }
         });
     }
 
@@ -205,7 +292,10 @@ internal sealed class TrayApplicationContext : IDisposable
     {
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         SystemEvents.SessionSwitch    -= OnSessionSwitch;
+        _displayListener.DisplayChanged -= OnDisplayChanged;
+        _displayListener.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
+        DiagnosticLog.Write("App shutting down.");
     }
 }

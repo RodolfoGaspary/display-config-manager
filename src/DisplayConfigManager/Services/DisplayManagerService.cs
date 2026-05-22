@@ -66,10 +66,20 @@ internal sealed class DisplayManagerService
         var paths = preset.Paths.Select(DtoMapper.DtoToPathInfo).ToArray();
         var modes = preset.Modes.Select(DtoMapper.DtoToModeInfo).ToArray();
 
-        // IMPORTANT: flags must be EXACTLY SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG.
+        // Flags:
+        //  - SDC_APPLY: actually apply the configuration.
+        //  - SDC_USE_SUPPLIED_DISPLAY_CONFIG: use our paths/modes verbatim.
+        //  - SDC_SAVE_TO_DATABASE: persist to the Windows display-config database
+        //    so this preset becomes the canonical config for this topology.
+        //    Without this, Windows reverts to whatever was previously stored in
+        //    its DB the moment something forces a topology re-resolution (game
+        //    fullscreen toggle, monitor wake, EDID re-read).
+        //
         // DO NOT add SDC_ALLOW_CHANGES — it enables Windows "Best Mode Logic" which
         // silently substitutes TV timings for PC timings and downgrades refresh rates.
-        uint flags = NativeConstants.SDC_APPLY | NativeConstants.SDC_USE_SUPPLIED_DISPLAY_CONFIG;
+        uint flags = NativeConstants.SDC_APPLY
+                   | NativeConstants.SDC_USE_SUPPLIED_DISPLAY_CONFIG
+                   | NativeConstants.SDC_SAVE_TO_DATABASE;
 
         int result = NativeMethods.SetDisplayConfig(
             (uint)paths.Length, paths,

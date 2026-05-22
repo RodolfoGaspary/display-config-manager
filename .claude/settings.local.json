@@ -10,7 +10,10 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(dotnet build *)",
-      "Bash(dotnet publish *)"
+      "Bash(dotnet publish *)",
+      "Bash(tasklist /FI \"IMAGENAME eq DisplayConfigManager.exe\" /FO LIST)",
+      "Bash(wmic process *)",
+      "PowerShell(Get-Process DisplayConfigManager -ErrorAction SilentlyContinue | Select-Object Id, Path, StartTime | Format-List; \"---\"; if \\(Test-Path \"$env:LOCALAPPDATA\\\\DisplayConfigManager\\\\diagnostic.log\"\\) { \"diagnostic.log:\"; Get-Content \"$env:LOCALAPPDATA\\\\DisplayConfigManager\\\\diagnostic.log\" } else { \"no diagnostic.log yet\" })"
     ]
   }
 }

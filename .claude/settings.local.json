@@ -13,7 +13,8 @@
       "Bash(dotnet publish *)",
       "Bash(tasklist /FI \"IMAGENAME eq DisplayConfigManager.exe\" /FO LIST)",
       "Bash(wmic process *)",
-      "PowerShell(Get-Process DisplayConfigManager -ErrorAction SilentlyContinue | Select-Object Id, Path, StartTime | Format-List; \"---\"; if \\(Test-Path \"$env:LOCALAPPDATA\\\\DisplayConfigManager\\\\diagnostic.log\"\\) { \"diagnostic.log:\"; Get-Content \"$env:LOCALAPPDATA\\\\DisplayConfigManager\\\\diagnostic.log\" } else { \"no diagnostic.log yet\" })"
+      "PowerShell(Get-Process DisplayConfigManager -ErrorAction SilentlyContinue | Select-Object Id, Path, StartTime | Format-List; \"---\"; if \\(Test-Path \"$env:LOCALAPPDATA\\\\DisplayConfigManager\\\\diagnostic.log\"\\) { \"diagnostic.log:\"; Get-Content \"$env:LOCALAPPDATA\\\\DisplayConfigManager\\\\diagnostic.log\" } else { \"no diagnostic.log yet\" })",
+      "Bash(cd \"C:\\\\Users\\\\rexto\\\\Documents\\\\Portals\\\\Programas\\\\display\" && stat -c \"%y  %s bytes  %n\" publish/DisplayConfigManager.exe src/DisplayConfigManager/bin/Release/net8.0-windows10.0.17763.0/win-x64/publish/DisplayConfigManager.exe 2>&1)"
     ]
   }
 }
